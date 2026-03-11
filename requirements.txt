@@ -1,0 +1,13 @@
+pandas
+numpy==1.26.4
+tqdm
+textstat
+matplotlib
+nltk
+openpyxl
+cloudscraper
+rapidfuzz
+scipy
+openpyxl
+beautifulsoup4
+fasttext
