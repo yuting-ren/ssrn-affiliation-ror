@@ -1,0 +1,45 @@
+__pycache__/
+*.pyc
+
+# virtual env
+.venv/
+venv/
+
+# mac
+.DS_Store
+
+# data
+data/
+outputs/
+
+# models
+*.bin
+*.model
+
+# logs
+*.log# python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# mac
+.DS_Store
+
+# data
+data/
+outputs/
+annexes/
+
+# models
+*.bin
+
+# datasets
+*.csv
+*.xlsx
+*.json
+*.dta
+*.parquet
+
+# logs
+*.log

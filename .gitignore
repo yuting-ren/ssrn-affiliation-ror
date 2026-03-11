@@ -1,8 +1,10 @@
 # python
 __pycache__/
 *.pyc
-venv/
+
+# virtual env
 .venv/
+venv/
 
 # mac
 .DS_Store
@@ -10,17 +12,10 @@ venv/
 # data
 data/
 outputs/
-annexes/
 
 # models
 *.bin
-
-# datasets
-*.csv
-*.xlsx
-*.json
-*.dta
-*.parquet
+*.model
 
 # logs
 *.log
