@@ -119,3 +119,4 @@ You may need to download NLTK resources if prompted (e.g., `punkt` tokenizer).
 * File paths or variable names in the scripts might need to be adjusted.
 * The website where the absracts are found is https://www.ssrn.com/index.cfm/en/
 
+# ssrn-affiliation-ror
