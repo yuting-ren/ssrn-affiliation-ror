@@ -1,10 +1,26 @@
+# python
 __pycache__/
-venv/
 *.pyc
+venv/
+.venv/
+
+# mac
 .DS_Store
 
+# data
 data/
 outputs/
 annexes/
 
-*.bin.DS_Store
+# models
+*.bin
+
+# datasets
+*.csv
+*.xlsx
+*.json
+*.dta
+*.parquet
+
+# logs
+*.log
