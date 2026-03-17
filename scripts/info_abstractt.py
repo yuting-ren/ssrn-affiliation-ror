@@ -13,7 +13,10 @@ import pandas as pd
 import cloudscraper
 from tqdm import tqdm
 import fasttext
-model = fasttext.load_model("lid.176.bin")
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MODEL_PATH = os.path.join(PROJECT_ROOT, "lid.176.bin")
+model = fasttext.load_model(MODEL_PATH)
 
 
 
@@ -36,20 +39,23 @@ def clean_html_text(raw_html):
     return x.strip()
 
 
-def info_abstract(output_info_abstract,begin_date, end_date):
+def info_abstract(output_info_abstract, begin_date, end_date, use_toydata=False, existing_dataset_path=None):
 
-    ##################### STEP 1 : GETIING THE ARTICLES AND THEIR INFO #################
+    if existing_dataset_path:
+        df_result = pd.read_csv(existing_dataset_path, sep=None, engine="python")
+    else:
+        ##################### STEP 1 : GETIING THE ARTICLES AND THEIR INFO #################
 
-    # Creation of the scraper to be fast
-    scraper = cloudscraper.create_scraper(browser={'custom': 'ScraperBot/1.0'})
+        # Creation of the scraper to be fast
+        scraper = cloudscraper.create_scraper(browser={'custom': 'ScraperBot/1.0'})
 
-    headers = {
-        'Accept': 'application/json, text/plain, */*',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
-        'Referer': 'https://www.ssrn.com/',
-    }
+        headers = {
+            'Accept': 'application/json, text/plain, */*',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+            'Referer': 'https://www.ssrn.com/',
+        }
 
-    keyword_list = ['accounting', 'adam', 'administration', 'agriculture', 'agricultural', 'aid', 'allocative', 'analysis',
+        keyword_list = ['accounting', 'adam', 'administration', 'agriculture', 'agricultural', 'aid', 'allocative', 'analysis',
             'ancient', 'anthropology', 'antitrust', 'approaches', 'asset', 'associations', 'auctions', 'austrian',
             'bayesian', 'behavior', 'behavioral', 'biotechnology', 'bureaucracy', 'business', 'capital', 'capitalist',
             'censored', 'change', 'choice', 'classical', 'classification', 'climate', 'clubs', 'collaborative',
@@ -102,168 +108,173 @@ def info_abstract(output_info_abstract,begin_date, end_date):
             'housing', 'speculation', 'minimum', 'migration', 'blockchain', 'violence', 'media', 'reporting',
             'country', 'restrictions', 'europe', 'versus', 'city', 'incentives', 'assessing', 'revisited',
             'quality', 'stable', 'matter', 'years', 'legal', 'federal', 'order', 'implementation', 'after']
-    N_KEYWORDS = 4
-    keyword_list = keyword_list[:N_KEYWORDS]
 
-    list_index = [0]
+        # Switch:
+        # - use_toydata=True  -> small test dataset
+        # - use_toydata=False -> full dataset
+        if use_toydata:
+            n_keywords = 4
+            keyword_list = keyword_list[:n_keywords]
+            list_index = [0]
+            search_count = 500
+        else:
+            list_index = list(range(0, 10000, 5000))
+            search_count = 5000
 
-    # Creation of a list of all the indexes we are going to use
+        # Creation of a list of all the indexes we are going to use
 
-    list_link = []
-    for word in keyword_list:
-        for index in list_index:
-            link = f"https://api.ssrn.com/content/v1/bindings/205/papers/search?index={index}&count=500&sort=0&term={word}"
-            list_link.append(link)
+        list_link = []
+        for word in keyword_list:
+            for index in list_index:
+                link = f"https://api.ssrn.com/content/v1/bindings/205/papers/search?index={index}&count={search_count}&sort=0&term={word}"
+                list_link.append(link)
 
-    # Getting the information of the articles with a keyword in the title
-    def fetch_url(url):
-        try:
-            response = scraper.get(url, headers=headers, timeout=10)
-            response.encoding = "utf-8" 
-            content = response.text.strip()
-
+        # Getting the information of the articles with a keyword in the title
+        def fetch_url(url):
             try:
-                data = json.loads(content)
-            except json.JSONDecodeError:
+                response = scraper.get(url, headers=headers, timeout=10)
+                response.encoding = "utf-8" 
+                content = response.text.strip()
+
+                try:
+                    data = json.loads(content)
+                except json.JSONDecodeError:
+                    return []
+
+                result = []
+
+                for paper in data.get('papers', []):
+                    approved_date = paper.get('approved_date', '').strip()
+                    try:
+                        formatted = datetime.strptime(approved_date, "%d %b %Y").strftime("%Y-%m-%d")
+                    except ValueError:
+                        continue
+
+                    if formatted >= begin_date and formatted <= end_date:
+                        authors = paper.get('authors', [])
+                        author_data = {}
+                        for idx, author in enumerate(authors, start=1):
+                            author_data[f'author_{idx}_id'] = author.get('id', '')
+                            author_data[f'author_{idx}_last_name'] = author.get('last_name', '')
+                            author_data[f'author_{idx}_first_name'] = author.get('first_name', '')
+                            author_data[f'author_{idx}_url'] = author.get('url', '')
+
+                        result.append({
+                            'titre': paper.get('title', '').strip(),
+                            'id': paper.get('id', ''),
+                            'abstract_type': paper.get('abstract_type', '').strip(),
+                            'publication_status': paper.get('publication_status', '').strip(),
+                            'is_paid': paper.get('is_paid', False),
+                            'reference': paper.get('reference', '').strip(),
+                            'page_count': paper.get('page_count', None),
+                            'url': paper.get('url', '').strip(),
+                            'affiliations': paper.get('affiliations', '').strip(),
+                            'is_approved': paper.get('is_approved', False),
+                            'approved_date': approved_date,
+                            'downloads': paper.get('downloads', 0),
+                            **author_data
+                        })
+                return result
+
+            except Exception as e:
+                print(f"Error for URL {url} : {e}")
                 return []
 
-            result = []
+        # Running the parallel
 
-            for paper in data.get('papers', []):
-                approved_date = paper.get('approved_date', '').strip()
+        max_threads = 8
+        all_results = []
+
+        with ThreadPoolExecutor(max_workers=max_threads) as executor:
+            futures = {executor.submit(fetch_url, url): url for url in list_link}
+
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Downloading the articles (step 1/6)"):
                 try:
-                    formatted = datetime.strptime(approved_date, "%d %b %Y").strftime("%Y-%m-%d")
-                except ValueError:
-                    continue
+                    data_chunk = future.result()
+                    if data_chunk:
+                        all_results.extend(data_chunk)
+                except Exception as e:
+                    print(f"Erreur lors du traitement d’un lien : {e}")
 
-                if formatted >= begin_date and formatted <= end_date:
-                    authors = paper.get('authors', [])
-                    author_data = {}
-                    for idx, author in enumerate(authors, start=1):
-                        author_data[f'author_{idx}_id'] = author.get('id', '')
-                        author_data[f'author_{idx}_last_name'] = author.get('last_name', '')
-                        author_data[f'author_{idx}_first_name'] = author.get('first_name', '')
-                        author_data[f'author_{idx}_url'] = author.get('url', '')
+        if all_results:
+            db_info = pd.DataFrame(all_results)
 
-                    result.append({
-                        'titre': paper.get('title', '').strip(),
-                        'id': paper.get('id', ''),
-                        'abstract_type': paper.get('abstract_type', '').strip(),
-                        'publication_status': paper.get('publication_status', '').strip(),
-                        'is_paid': paper.get('is_paid', False),
-                        'reference': paper.get('reference', '').strip(),
-                        'page_count': paper.get('page_count', None),
-                        'url': paper.get('url', '').strip(),
-                        'affiliations': paper.get('affiliations', '').strip(),
-                        'is_approved': paper.get('is_approved', False),
-                        'approved_date': approved_date,
-                        'downloads': paper.get('downloads', 0),
-                        **author_data
-                    })
-            return result
-
-        except Exception as e:
-            print(f"Error for URL {url} : {e}")
-            return []
-
-    # Running the parallel
-
-    max_threads = 8
-    all_results = []
-
-    with ThreadPoolExecutor(max_workers=max_threads) as executor:
-        futures = {executor.submit(fetch_url, url): url for url in list_link}
-
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Downloading the articles (step 1/6)"):
-            try:
-                data_chunk = future.result()
-                if data_chunk:
-                    all_results.extend(data_chunk)
-            except Exception as e:
-                print(f"Erreur lors du traitement d’un lien : {e}")
-
-    if all_results:
-        db_info = pd.DataFrame(all_results)
-
-        # Cleaning the special caracters
-        db_info = db_info.map(lambda s: re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]', ' ', s) if isinstance(s, str) else s)
+            # Cleaning the special caracters
+            db_info = db_info.map(lambda s: re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]', ' ', s) if isinstance(s, str) else s)
         
-        for col in db_info.select_dtypes(include='object').columns:
-            db_info[col] = db_info[col].str.replace(';', '', regex=False)
+            for col in db_info.select_dtypes(include=["object", "string"]).columns:
+                db_info[col] = db_info[col].str.replace(';', '', regex=False)
 
-        db_info = db_info.drop_duplicates()
-        print(f"File created with {len(db_info)} articles")
-    else:
-        print("⚠️ No result found")
+            db_info = db_info.drop_duplicates()
+            print(f"File created with {len(db_info)} articles")
+        else:
+            print("⚠️ No result found")
+            return
 
-
-
-
-
-    ##################### STEP 2 : GETIING THE ABSTRACTS ######################
+        ##################### STEP 2 : GETIING THE ABSTRACTS ######################
 
 
 
 
 
 
-    # Using a scraper to go fast
-    scraper = cloudscraper.create_scraper()
-    db_info['id'] = db_info['id'].astype(str)
-    ids_to_fetch = db_info['id']
+        # Using a scraper to go fast
+        scraper = cloudscraper.create_scraper()
+        db_info['id'] = db_info['id'].astype(str)
+        ids_to_fetch = db_info['id']
 
 
-    # Getting the abstracts
-    base_url = "https://api.ssrn.com/papers/v1/papers/"
+        # Getting the abstracts
+        base_url = "https://api.ssrn.com/papers/v1/papers/"
 
-    def fetch_paper(paper_id):
-        url = base_url + paper_id
-        for attempt in range(retries):
-            try:
-                response = scraper.get(url, timeout=10)
-                if response.status_code == 200:
-                    root = ET.fromstring(response.text)
-                    paper_date = root.findtext('paperDate', default='')
-                    abstract = root.findtext('abstract', default='')
-                    return {'id': paper_id, 'paperDate': paper_date, 'abstract': abstract}
-            except Exception:
-                time.sleep(1)
-        return {'id': paper_id, 'paperDate': '', 'abstract': ''}
+        def fetch_paper(paper_id):
+            url = base_url + paper_id
+            for attempt in range(retries):
+                try:
+                    response = scraper.get(url, timeout=10)
+                    if response.status_code == 200:
+                        root = ET.fromstring(response.text)
+                        paper_date = root.findtext('paperDate', default='')
+                        abstract = root.findtext('abstract', default='')
+                        return {'id': paper_id, 'paperDate': paper_date, 'abstract': abstract}
+                except Exception:
+                    time.sleep(1)
+            return {'id': paper_id, 'paperDate': '', 'abstract': ''}
 
-    # Using parallel to go fast
+        # Using parallel to go fast
 
-    max_threads = 8             # simultaneous threads to get the abstracts
-    delay_between_calls = 0.01   # delay between each thread to get the abstracts
-    retries = 2                 # max number of tries per article id
+        max_threads = 8             # simultaneous threads to get the abstracts
+        delay_between_calls = 0.01   # delay between each thread to get the abstracts
+        retries = 2                 # max number of tries per article id
 
-    results = []
-    failed_ids = []
+        results = []
+        failed_ids = []
 
-    with ThreadPoolExecutor(max_workers=max_threads) as executor:
-        future_to_id = {}
-        for pid in ids_to_fetch :
-            future = executor.submit(fetch_paper, pid)
-            future_to_id[future] = pid
+        with ThreadPoolExecutor(max_workers=max_threads) as executor:
+            future_to_id = {}
+            for pid in ids_to_fetch :
+                future = executor.submit(fetch_paper, pid)
+                future_to_id[future] = pid
 
-        for future in tqdm(as_completed(future_to_id), total=len(future_to_id), desc="Getting the abstracts (step 2/6)"):
-            pid = future_to_id[future]
-            try:
-                result = future.result()
-                results.append(result)
-                time.sleep(delay_between_calls)
-                if result['abstract'] == '' and result['paperDate'] == '':
+            for future in tqdm(as_completed(future_to_id), total=len(future_to_id), desc="Getting the abstracts (step 2/6)"):
+                pid = future_to_id[future]
+                try:
+                    result = future.result()
+                    results.append(result)
+                    time.sleep(delay_between_calls)
+                    if result['abstract'] == '' and result['paperDate'] == '':
+                        failed_ids.append(pid)
+                except Exception:
                     failed_ids.append(pid)
-            except Exception:
-                failed_ids.append(pid)
 
 
-    # Saving the results
-    df_new = pd.DataFrame(results)
-    df_new['id'] = df_new['id'].astype(str)
+        # Saving the results
+        df_new = pd.DataFrame(results)
+        df_new['id'] = df_new['id'].astype(str)
 
-    df_combined = pd.concat([df_new], ignore_index=True)
-    df_combined = df_combined.drop_duplicates(subset='id', keep='last')
-    df_result = pd.merge(db_info, df_combined, on='id', how='left')
+        df_combined = pd.concat([df_new], ignore_index=True)
+        df_combined = df_combined.drop_duplicates(subset='id', keep='last')
+        df_result = pd.merge(db_info, df_combined, on='id', how='left')
 
 
     from bs4 import BeautifulSoup
@@ -301,12 +312,8 @@ def info_abstract(output_info_abstract,begin_date, end_date):
 
     # Cleaning the special caracters
 
-    for col in df_result.select_dtypes(include='object').columns:
+    for col in df_result.select_dtypes(include=["object", "string"]).columns:
         df_result[col] = df_result[col].str.replace(';', ' ', regex=False)
-
-
-    import fasttext
-    model = fasttext.load_model("lid.176.bin")
 
     def detect_lang(text):
         if not isinstance(text, str) or text.strip() == "":
@@ -347,8 +354,13 @@ def info_abstract(output_info_abstract,begin_date, end_date):
     # Exporting the resuting csv
     db_info_abstract.to_csv(output_info_abstract, sep=";", index=False, encoding="utf-8-sig")
     print("Output saved to:", os.path.abspath(output_info_abstract))
-    
 
 
-
-
+if __name__ == "__main__":
+    info_abstract(
+        "../outputs/db_info_abstract.csv",
+        "2015-12-01",
+        "2025-07-06",
+        use_toydata=False,
+        existing_dataset_path="/Users/yutingren/Library/CloudStorage/Dropbox/Mac/Downloads/db_info_abstract (1).csv",
+    )

@@ -1,17 +1,43 @@
 # 只保留 2-author
 
+"""
+Purpose:
+- Keep only rows with exactly two authors from the main abstract dataset.
+- Split affiliations when there is exactly one "and" between two affiliations.
+- Query the ROR API for author 1 and author 2 affiliation matches.
+- Append new author1/author2 old names to dictionary.csv without duplicating existing
+  old names, and refresh the simplified name column.
 
+Input:
+- outputs/db_info_abstract.csv
+- outputs/dictionary.csv
 
+Output:
+- outputs/db_info_abstract_two_authors_ror.csv
+- updated outputs/dictionary.csv
+"""
+
+import os
+import sys
 import pandas as pd
 import requests
 import urllib.parse
 import re
 import numpy as np
 
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.append(PROJECT_ROOT)
+
+from path_config import apply_dataset_mode, get_dataset_mode
+
 # ---------- paths ----------
-file_path = "/Users/yutingren/Library/CloudStorage/Dropbox/Mac/Documents/AI/test_nov/abstract_analysis-main/outputs/db_info_abstract.csv"
-output_path = "/Users/yutingren/Library/CloudStorage/Dropbox/Mac/Documents/AI/test_nov/abstract_analysis-main/outputs/db_info_abstract_two_authors_ror.csv"
+base_file_path = "/Users/yutingren/Library/CloudStorage/Dropbox/Mac/Documents/AI/test_nov/abstract_analysis-main/outputs/db_info_abstract.csv"
+base_output_path = "/Users/yutingren/Library/CloudStorage/Dropbox/Mac/Documents/AI/test_nov/abstract_analysis-main/outputs/db_info_abstract_two_authors_ror.csv"
 dict_path = "/Users/yutingren/Library/CloudStorage/Dropbox/Mac/Documents/AI/test_nov/abstract_analysis-main/outputs/dictionary.csv"
+dataset_mode = get_dataset_mode()
+file_path = apply_dataset_mode(base_file_path, dataset_mode)
+output_path = apply_dataset_mode(base_output_path, dataset_mode)
 
 # ---------- load ----------
 df = pd.read_csv(file_path, sep=";", engine="python")
@@ -59,6 +85,15 @@ def split_affi(text):
         return (None, None)
     parts = re.split(r"\sand\s", str(text), maxsplit=1, flags=re.IGNORECASE)
     return (parts[0].strip(), parts[1].strip()) if len(parts) == 2 else (None, None)
+
+def simplify_name(text):
+    if pd.isna(text):
+        return None
+    text = str(text).lower()
+    text = re.sub(r"\band\b", "", text)
+    text = re.sub(r"[^a-z0-9\s]", "", text)
+    text = re.sub(r"\s+", "", text).strip()
+    return text
 
 pairs = df.loc[mask, "affiliations"].apply(split_affi)
 df.loc[mask, "author1_affi_raw"] = pairs.apply(lambda x: x[0]).values
@@ -158,28 +193,62 @@ df["author_2_ror_id"] = (
     .str.replace("https://ror.org/", "", regex=False)
 )
 
-# ---------- update dictionary old names using author1_affi_raw + author_1_ror_id ----------
+# ---------- append only new author1/author2 old names to dictionary ----------
 author1_lookup = (
-    df[["author1_affi_raw", "author_1_ror_id"]]
-    .dropna(subset=["author1_affi_raw", "author_1_ror_id"])
+    df[["author1_affi_raw", "author_1_institution", "author_1_ror_id"]]
+    .dropna(subset=["author1_affi_raw", "author_1_institution", "author_1_ror_id"])
+    .drop_duplicates()
+    .rename(columns={
+        "author1_affi_raw": "old names",
+        "author_1_institution": "ror_name",
+        "author_1_ror_id": "ror_id"
+    })
+)
+
+author2_lookup = (
+    df[["author2_affi_raw", "author_2_institution", "author_2_ror_id"]]
+    .dropna(subset=["author2_affi_raw", "author_2_institution", "author_2_ror_id"])
+    .drop_duplicates()
+    .rename(columns={
+        "author2_affi_raw": "old names",
+        "author_2_institution": "ror_name",
+        "author_2_ror_id": "ror_id"
+    })
+)
+
+author_lookup = (
+    pd.concat([author1_lookup, author2_lookup], ignore_index=True)
     .drop_duplicates()
 )
 
-if "ror_id" in dictionary.columns:
-    dictionary = dictionary.merge(
-        author1_lookup,
-        on="ror_id",
-        how="left"
+print("Dictionary columns:", dictionary.columns.tolist())
+print("author lookup columns:", author_lookup.columns.tolist())
+
+required_dict_cols = {"old names", "ror_name", "ror_id"}
+if required_dict_cols.issubset(dictionary.columns):
+    existing_old_names = set(
+        dictionary["old names"]
+        .dropna()
+        .astype(str)
+        .str.strip()
     )
 
-    if "old names" in dictionary.columns:
-        dictionary["old names"] = dictionary["author1_affi_raw"].combine_first(dictionary["old names"])
-    else:
-        dictionary["old names"] = dictionary["author1_affi_raw"]
+    author_lookup["old names"] = author_lookup["old names"].astype(str).str.strip()
+    new_author_rows = author_lookup[
+        (~author_lookup["old names"].isin(existing_old_names)) &
+        (author_lookup["old names"] != "")
+    ].copy()
 
-    dictionary = dictionary.drop(columns=["author1_affi_raw"])
+    if not new_author_rows.empty:
+        dictionary = pd.concat([dictionary, new_author_rows], ignore_index=True)
+        print(f"Added {len(new_author_rows)} new old names to dictionary.")
+    else:
+        print("No new old names to add to dictionary.")
 else:
-    print("Warning: dictionary does not contain 'ror_id'; skipping dictionary update.")
+    print("Warning: dictionary does not contain required columns; skipping dictionary update.")
+
+if "ror_name" in dictionary.columns:
+    dictionary["simplified name"] = dictionary["ror_name"].apply(simplify_name)
 
 visible_cols = [
     c for c in df.columns

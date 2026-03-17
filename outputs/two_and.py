@@ -1,12 +1,39 @@
+import os
+import sys
 import pandas as pd
 import requests
 import urllib.parse
 import re
 import time
 
+"""
+Purpose:
+- Repair two-author affiliation rows that were not cleanly split in earlier steps.
+- Use dictionary.csv to replace known old affiliation names with simplified names.
+- Re-split affiliations around a single "and", then fill institution data from the
+  dictionary first and the ROR API second.
+- Do not populate country fields for now, because ROR top-match geography can be noisy.
+
+Input:
+- outputs/dictionary.csv
+- outputs/db_info_abstract_two_authors_ror.csv
+
+Output:
+- outputs/affiliation_substituted.csv
+"""
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.append(PROJECT_ROOT)
+
+from path_config import apply_dataset_mode, get_dataset_mode
+
 dict_path = "/Users/yutingren/Library/CloudStorage/Dropbox/Mac/Documents/AI/test_nov/abstract_analysis-main/outputs/dictionary.csv"
-data_path = "/Users/yutingren/Library/CloudStorage/Dropbox/Mac/Documents/AI/test_nov/abstract_analysis-main/outputs/db_info_abstract_two_authors_ror.csv"
-output_path = "/Users/yutingren/Library/CloudStorage/Dropbox/Mac/Documents/AI/test_nov/abstract_analysis-main/outputs/affiliation_substituted.csv"
+base_data_path = "/Users/yutingren/Library/CloudStorage/Dropbox/Mac/Documents/AI/test_nov/abstract_analysis-main/outputs/db_info_abstract_two_authors_ror.csv"
+base_output_path = "/Users/yutingren/Library/CloudStorage/Dropbox/Mac/Documents/AI/test_nov/abstract_analysis-main/outputs/affiliation_substituted.csv"
+dataset_mode = get_dataset_mode()
+data_path = apply_dataset_mode(base_data_path, dataset_mode)
+output_path = apply_dataset_mode(base_output_path, dataset_mode)
 
 # ---------- read files ----------
 dictionary = pd.read_csv(dict_path, sep=";")
@@ -29,28 +56,31 @@ if rename_map:
 df["affiliations"] = df["affiliations"].astype(str)
 
 # ---------- dictionary mappings ----------
-# affiliations -> short ror id
-affi_to_ror = dict(
+# old names -> simplified name
+affi_to_simplified = dict(
     sorted(
-        zip(dictionary["old names"], dictionary["ror_id"]),
+        zip(dictionary["old names"], dictionary["simplified name"]),
         key=lambda x: len(str(x[0])),
         reverse=True
     )
 )
 
-# short ror id -> institution
-ror_to_inst = dict(zip(dictionary["ror_id"], dictionary["ror_name"]))
+# simplified name -> institution
+simplified_to_inst = dict(zip(dictionary["simplified name"], dictionary["ror_name"]))
 
-# ---------- replace known affiliations with short ror ids ----------
+# simplified name -> ror id
+simplified_to_ror = dict(zip(dictionary["simplified name"], dictionary["ror_id"]))
+
+# ---------- replace known affiliations with simplified names ----------
 mask_replace = df["and_count"] != 1
 
 def replace_affiliation(text):
     if pd.isna(text):
         return text
     text = str(text)
-    for affi, ror in affi_to_ror.items():
+    for affi, simplified in affi_to_simplified.items():
         if pd.notna(affi) and affi in text:
-            text = text.replace(affi, str(ror))
+            text = text.replace(affi, str(simplified))
     return text
 
 df.loc[mask_replace, "affiliations"] = df.loc[mask_replace, "affiliations"].apply(replace_affiliation)
@@ -76,18 +106,20 @@ split_result = df.loc[mask_split, "affiliations"].str.split(
 df.loc[mask_split, "author1_affi_raw"] = split_result[0].str.strip().values
 df.loc[mask_split, "author2_affi_raw"] = split_result[1].str.strip().values
 
-# ---------- first pass: fill institutions from dictionary ----------
-def find_institution(text):
+# ---------- first pass: fill institutions and ror ids from dictionary ----------
+def find_dictionary_value(text, lookup):
     if pd.isna(text):
         return None
     text = str(text).strip()
-    for ror, inst in ror_to_inst.items():
-        if pd.notna(ror) and str(ror) in text:
-            return inst
+    for simplified, value in lookup.items():
+        if pd.notna(simplified) and str(simplified) in text:
+            return value
     return None
 
-author1_inst_dict = df["author1_affi_raw"].apply(find_institution)
-author2_inst_dict = df["author2_affi_raw"].apply(find_institution)
+author1_inst_dict = df["author1_affi_raw"].apply(lambda x: find_dictionary_value(x, simplified_to_inst))
+author2_inst_dict = df["author2_affi_raw"].apply(lambda x: find_dictionary_value(x, simplified_to_inst))
+author1_ror_dict = df["author1_affi_raw"].apply(lambda x: find_dictionary_value(x, simplified_to_ror))
+author2_ror_dict = df["author2_affi_raw"].apply(lambda x: find_dictionary_value(x, simplified_to_ror))
 
 if "author_1_institution" in df.columns:
     df["author_1_institution"] = df["author_1_institution"].combine_first(author1_inst_dict)
@@ -98,6 +130,16 @@ if "author_2_institution" in df.columns:
     df["author_2_institution"] = df["author_2_institution"].combine_first(author2_inst_dict)
 else:
     df["author_2_institution"] = author2_inst_dict
+
+if "author_1_ror_id" in df.columns:
+    df["author_1_ror_id"] = df["author_1_ror_id"].combine_first(author1_ror_dict)
+else:
+    df["author_1_ror_id"] = author1_ror_dict
+
+if "author_2_ror_id" in df.columns:
+    df["author_2_ror_id"] = df["author_2_ror_id"].combine_first(author2_ror_dict)
+else:
+    df["author_2_ror_id"] = author2_ror_dict
 
 # ---------- ROR matcher with cache ----------
 cache = {}
@@ -167,9 +209,29 @@ def ror_match(text):
     time.sleep(0.1)
     return result
 
+def skipped_match_result(reason):
+    return {
+        "institution": None,
+        "ror_id": None,
+        "country": None,
+        "status": reason
+    }
+
 # ---------- second pass: ROR match raw affiliation fields ----------
-match_1 = df["author1_affi_raw"].apply(ror_match)
-match_2 = df["author2_affi_raw"].apply(ror_match)
+match_1 = pd.Series(
+    [skipped_match_result("matched_in_dictionary")] * len(df),
+    index=df.index
+)
+match_2 = pd.Series(
+    [skipped_match_result("matched_in_dictionary")] * len(df),
+    index=df.index
+)
+
+author1_needs_ror = author1_inst_dict.isna()
+author2_needs_ror = author2_inst_dict.isna()
+
+match_1.loc[author1_needs_ror] = df.loc[author1_needs_ror, "author1_affi_raw"].apply(ror_match)
+match_2.loc[author2_needs_ror] = df.loc[author2_needs_ror, "author2_affi_raw"].apply(ror_match)
 
 match_1_inst = match_1.apply(lambda x: x["institution"])
 match_2_inst = match_2.apply(lambda x: x["institution"])
@@ -186,24 +248,38 @@ else:
     df["author_2_institution"] = match_2_inst
 
 # author 1 outputs
-df["author_1_ror_url"] = match_1.apply(lambda x: x["ror_id"])
-df["author_1_country"] = match_1.apply(lambda x: x["country"])
+existing_author_1_ror_url = df["author_1_ror_id"].where(
+    df["author_1_ror_id"].notna() & (df["author_1_ror_id"].astype(str).str.strip() != ""),
+    None
+)
+existing_author_1_ror_url = existing_author_1_ror_url.apply(
+    lambda x: f"https://ror.org/{x}" if pd.notna(x) else None
+)
+df["author_1_ror_url"] = match_1.apply(lambda x: x["ror_id"]).combine_first(existing_author_1_ror_url)
 df["author_1_ror_status"] = match_1.apply(lambda x: x["status"])
-df["author_1_ror_id"] = (
+match_1_ror_id = (
     df["author_1_ror_url"]
     .fillna("")
     .str.replace("https://ror.org/", "", regex=False)
 )
+df["author_1_ror_id"] = df["author_1_ror_id"].combine_first(match_1_ror_id)
 
 # author 2 outputs
-df["author_2_ror_url"] = match_2.apply(lambda x: x["ror_id"])
-df["author_2_country"] = match_2.apply(lambda x: x["country"])
+existing_author_2_ror_url = df["author_2_ror_id"].where(
+    df["author_2_ror_id"].notna() & (df["author_2_ror_id"].astype(str).str.strip() != ""),
+    None
+)
+existing_author_2_ror_url = existing_author_2_ror_url.apply(
+    lambda x: f"https://ror.org/{x}" if pd.notna(x) else None
+)
+df["author_2_ror_url"] = match_2.apply(lambda x: x["ror_id"]).combine_first(existing_author_2_ror_url)
 df["author_2_ror_status"] = match_2.apply(lambda x: x["status"])
-df["author_2_ror_id"] = (
+match_2_ror_id = (
     df["author_2_ror_url"]
     .fillna("")
     .str.replace("https://ror.org/", "", regex=False)
 )
+df["author_2_ror_id"] = df["author_2_ror_id"].combine_first(match_2_ror_id)
 
 # ---------- save ----------
 df.to_csv(output_path, sep=";", index=False)

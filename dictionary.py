@@ -20,6 +20,14 @@ df = df.rename(columns={
 # 删除 ror_name 为空的行
 df = df[df["ror_name"].notna() & (df["ror_name"].str.strip() != "")]
 
+# 追加固定映射
+manual_rows = pd.DataFrame([
+    {"old names": "Independent", "ror_name": "unknown", "ror_id": None},
+    {"old names": "affiliation not provided to SSRN", "ror_name": "unknown", "ror_id": None},
+])
+
+df = pd.concat([df, manual_rows], ignore_index=True)
+
 # 删除重复行
 df = df.drop_duplicates()
 
