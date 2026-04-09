@@ -56,7 +56,8 @@ def aff_1_author(output_info_abstract,output_aff_1_author):
         text = text.encode('ASCII', 'ignore').decode('utf-8')
         return text
 
-    df_affiliation['affiliations'] = df_affiliation['affiliations'].apply(remove_accents)
+    df_affiliation['affiliations_new'] = df_affiliation['affiliations'].apply(remove_accents)
+    df_affiliation['affiliations'] = df_affiliation['affiliations_new']
 
 
     # date format
@@ -107,7 +108,8 @@ def aff_1_author(output_info_abstract,output_aff_1_author):
         text = text.encode('ASCII', 'ignore').decode('utf-8')
         return text
 
-    df_affiliation['affiliations'] = df_affiliation['affiliations'].apply(remove_accents)
+    df_affiliation['affiliations_new'] = df_affiliation['affiliations'].apply(remove_accents)
+    df_affiliation['affiliations'] = df_affiliation['affiliations_new']
 
     ####################### STEP 2.1 : USING A LIBRARY  ###############
 
@@ -493,5 +495,4 @@ def aff_1_author(output_info_abstract,output_aff_1_author):
     # Convert to DataFrame and saving
     word_df = pd.DataFrame(word_counts.items(), columns=['word', 'count']).sort_values(by='count', ascending=False)
     word_df.to_csv('outputs/affiliations_not_found_word_count.csv', sep=';',index=False)
-
 

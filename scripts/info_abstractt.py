@@ -39,7 +39,24 @@ def clean_html_text(raw_html):
     return x.strip()
 
 
+def resolve_project_path(path):
+    if path is None or os.path.isabs(path):
+        return path
+    return os.path.normpath(os.path.join(PROJECT_ROOT, path))
+
+
+def add_suffix_to_csv_path(path, suffix):
+    base, ext = os.path.splitext(path)
+    if ext.lower() != ".csv":
+        return f"{path}{suffix}"
+    return f"{base}{suffix}{ext}"
+
+
 def info_abstract(output_info_abstract, begin_date, end_date, use_toydata=False, existing_dataset_path=None):
+    output_info_abstract = resolve_project_path(output_info_abstract)
+    existing_dataset_path = resolve_project_path(existing_dataset_path)
+    if use_toydata:
+        output_info_abstract = add_suffix_to_csv_path(output_info_abstract, "_toy")
 
     if existing_dataset_path:
         df_result = pd.read_csv(existing_dataset_path, sep=None, engine="python")
@@ -358,9 +375,9 @@ def info_abstract(output_info_abstract, begin_date, end_date, use_toydata=False,
 
 if __name__ == "__main__":
     info_abstract(
-        "../outputs/db_info_abstract.csv",
+        "outputs/db_info_abstract.csv",
         "2015-12-01",
         "2025-07-06",
         use_toydata=False,
-        existing_dataset_path="/Users/yutingren/Library/CloudStorage/Dropbox/Mac/Downloads/db_info_abstract (1).csv",
+        #existing_dataset_path="/Users/yutingren/Library/CloudStorage/Dropbox/Mac/Downloads/db_info_abstract (1).csv",
     )
