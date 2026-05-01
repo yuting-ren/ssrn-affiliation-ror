@@ -8,8 +8,8 @@ Purpose:
 
 Rules:
 - 2 authors: and_count == 1
-- 3 authors: and_count == 1 and comma_count == 2
-- 4 authors: and_count == 1 and comma_count == 3
+- 3 authors: and_count == 1 and comma_count == 1
+- 4 authors: and_count == 1 and comma_count == 2
 
 Examples:
 - python scripts/01multi_authors_dic_names.py
@@ -18,11 +18,13 @@ Examples:
 """
 
 import argparse
+import csv
 import os
 import re
 import sys
 
 import pandas as pd
+from tqdm import tqdm
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
@@ -36,6 +38,7 @@ MAX_LOOP_ITERATIONS = 10
 AUTHOR_WORD = {2: "two", 3: "three", 4: "four"}
 
 base_dictionary_names_path = "/Users/yutingren/Library/CloudStorage/Dropbox/Mac/Documents/AI/test_nov/abstract_analysis-main/outputs/dictionary_names.csv"
+base_dic_new_path = "/Users/yutingren/Library/CloudStorage/Dropbox/Mac/Documents/AI/test_nov/abstract_analysis-main/outputs/dic_new.csv"
 BASE_INPUT_PATHS = {
     2: "/Users/yutingren/Library/CloudStorage/Dropbox/Mac/Documents/AI/test_nov/abstract_analysis-main/outputs/db_info_abstract_two_authors_ror.csv",
     3: "/Users/yutingren/Library/CloudStorage/Dropbox/Mac/Documents/AI/test_nov/abstract_analysis-main/outputs/db_info_abstract_three_authors_ror.csv",
@@ -149,6 +152,138 @@ def resolve_input_path(target_authors):
     return apply_dataset_mode(base_input_path, dataset_mode)
 
 
+def normalize_match_key(value):
+    if pd.isna(value):
+        return None
+    text = str(value).strip().lower()
+    if text == "":
+        return None
+    return text
+
+
+def load_dic_new(dic_new_path):
+    required_cols = {"raw_name", "cleaned_name", "ror_link", "country", "ror_status"}
+
+    attempts = [
+        {"sep": ";", "encoding": "utf-8"},
+        {"sep": ";", "encoding": "utf-8-sig"},
+        {"sep": ";", "encoding": "latin1"},
+        {"sep": ",", "encoding": "utf-8"},
+        {"sep": ",", "encoding": "utf-8-sig"},
+        {"sep": ",", "encoding": "latin1"},
+    ]
+
+    for option in attempts:
+        try:
+            df = pd.read_csv(dic_new_path, sep=option["sep"], encoding=option["encoding"])
+        except Exception:
+            continue
+
+        df.columns = df.columns.astype(str).str.strip()
+        if required_cols.issubset(set(df.columns)):
+            return df
+
+        # Support malformed export where all columns are packed into one comma-separated column.
+        if len(df.columns) == 1:
+            packed_col = df.columns[0]
+            packed_lines = df[packed_col].astype(str).tolist()
+            parsed_rows = []
+            for line in packed_lines:
+                # Parse each packed line as a proper CSV row to respect quoted commas.
+                row = next(csv.reader([line], delimiter=",", quotechar='"'))
+                parsed_rows.append(row)
+
+            if parsed_rows:
+                max_len = max(len(r) for r in parsed_rows)
+                if max_len >= 6:
+                    normalized_rows = []
+                    for row in parsed_rows:
+                        if len(row) < 6:
+                            row = row + [None] * (6 - len(row))
+                        elif len(row) > 6:
+                            # Keep rightmost canonical fields; merge the overflow into raw_name.
+                            overflow = ",".join(row[: len(row) - 5])
+                            row = [overflow] + row[len(row) - 5 :]
+                        normalized_rows.append(row[:6])
+
+                    expected = ["raw_name", "cleaned_name", "ror_name", "ror_link", "country", "ror_status"]
+                    if [str(x).strip().lower() for x in normalized_rows[0]] == expected:
+                        normalized_rows = normalized_rows[1:]
+
+                    expanded = pd.DataFrame(normalized_rows, columns=expected)
+                    if required_cols.issubset(set(expanded.columns)):
+                        return expanded
+
+    raise ValueError(
+        f"Unable to parse dic_new.csv with required columns {sorted(required_cols)}: {dic_new_path}"
+    )
+
+
+def build_first_value_lookup(dic_frame, key_col):
+    frame = dic_frame.copy()
+    frame[key_col] = frame[key_col].apply(normalize_match_key)
+    frame = frame[frame[key_col].notna()].copy()
+    frame = frame.drop_duplicates(subset=[key_col], keep="first")
+    return {
+        row[key_col]: (
+            row.get("ror_link"),
+            row.get("country"),
+            row.get("ror_status"),
+        )
+        for _, row in frame.iterrows()
+    }
+
+
+def enrich_authors_from_dic_new(df, dic_new, target_authors):
+    cleaned_lookup = build_first_value_lookup(dic_new, "cleaned_name")
+    raw_lookup = build_first_value_lookup(dic_new, "raw_name")
+
+    for i in range(1, target_authors + 1):
+        affi_col = f"author{i}_affi"
+        legacy_inst_col = f"author_{i}_institution"
+        inst_col = f"author{i}_institution"
+        ror_link_col = f"author{i}_ror_link"
+        country_col = f"author{i}_country"
+        status_col = f"author{i}_ror_status"
+
+        if inst_col not in df.columns and legacy_inst_col in df.columns:
+            df[inst_col] = df[legacy_inst_col]
+        if inst_col not in df.columns:
+            df[inst_col] = None
+        if affi_col not in df.columns:
+            df[affi_col] = None
+
+        # Match only with author{i}_affi (no fallback to institution).
+        source_series = df[affi_col]
+
+        tqdm.pandas(desc=f"Author{i} affi cleaned_name key")
+        clean_keys = (
+            source_series
+            .progress_apply(simplify_affiliation)
+            .progress_apply(normalize_match_key)
+        )
+        tqdm.pandas(desc=f"Author{i} affi raw_name key")
+        raw_keys = source_series.progress_apply(normalize_match_key)
+
+        tqdm.pandas(desc=f"Author{i} match cleaned_name")
+        matched_clean = clean_keys.progress_apply(lambda x: cleaned_lookup.get(x))
+        tqdm.pandas(desc=f"Author{i} match raw_name fallback")
+        matched_raw = raw_keys.progress_apply(lambda x: raw_lookup.get(x))
+        resolved = matched_clean.where(matched_clean.notna(), matched_raw)
+
+        df[ror_link_col] = resolved.apply(
+            lambda x: x[0] if isinstance(x, tuple) and len(x) > 0 else None
+        )
+        df[country_col] = resolved.apply(
+            lambda x: x[1] if isinstance(x, tuple) and len(x) > 1 else None
+        )
+        df[status_col] = resolved.apply(
+            lambda x: x[2] if isinstance(x, tuple) and len(x) > 2 else None
+        )
+
+    return df
+
+
 def load_author_data(input_path, scope, sample_size):
     df_all = pd.read_csv(input_path, sep=";")
     df_all.columns = df_all.columns.str.strip()
@@ -196,9 +331,9 @@ def get_split_mask(and_count, comma_count, target_authors):
     if target_authors == 2:
         return and_count == 1
     if target_authors == 3:
-        return (and_count == 1) & (comma_count == 2)
+        return (and_count == 1) & (comma_count == 1)
     if target_authors == 4:
-        return (and_count == 1) & (comma_count == 3)
+        return (and_count == 1) & (comma_count == 2)
     raise ValueError(f"Unsupported target_authors: {target_authors}")
 
 
@@ -228,6 +363,41 @@ def split_affiliations(text, target_authors):
         return [None] * target_authors
 
     return all_parts
+
+
+def build_author_affi_from_rounds(df, target_authors):
+    for i in range(1, target_authors + 1):
+        base_col = f"author{i}_affi_split"
+        raw_col = f"author{i}_affi_raw"
+        round_pattern = re.compile(rf"^author{i}_affi_split_round(\d+)$")
+
+        round_cols = []
+        for col in df.columns:
+            m = round_pattern.match(col)
+            if m:
+                round_cols.append((int(m.group(1)), col))
+        round_cols.sort(key=lambda x: x[0], reverse=True)
+
+        candidate_cols = [col for _, col in round_cols]
+        if base_col in df.columns:
+            candidate_cols.append(base_col)
+        if raw_col in df.columns:
+            candidate_cols.append(raw_col)
+
+        target_col = f"author{i}_affi"
+        if not candidate_cols:
+            df[target_col] = None
+            continue
+
+        # Treat empty strings as missing, then pick first non-null from left to right.
+        candidate_frame = (
+            df[candidate_cols]
+            .replace(r"^\s*$", pd.NA, regex=True)
+            .bfill(axis=1)
+        )
+        df[target_col] = candidate_frame.iloc[:, 0]
+
+    return df
 
 
 args = parse_args()
@@ -263,6 +433,7 @@ def process_author_count(target_authors, process_scope):
         process_scope,
     )
     dictionary_names_path = resolve_dictionary_names_path(process_scope)
+    dic_new_path = apply_dataset_mode(base_dic_new_path, dataset_mode)
 
     input_path = resolve_input_path(target_authors)
     if not os.path.exists(input_path):
@@ -270,9 +441,12 @@ def process_author_count(target_authors, process_scope):
             f"Input file not found: {input_path}. "
             f"Please generate db_info_abstract_{AUTHOR_WORD[target_authors]}_authors_ror.csv first."
         )
+    if not os.path.exists(dic_new_path):
+        raise FileNotFoundError(f"dic_new file not found: {dic_new_path}")
 
     df = load_author_data(input_path, process_scope, SAMPLE_SIZE)
     dictionary_names = pd.read_csv(dictionary_names_path, sep=";")
+    dic_new = load_dic_new(dic_new_path)
     dictionary_names.columns = dictionary_names.columns.str.strip()
     dictionary_names = normalize_dictionary_names(dictionary_names)
 
@@ -330,7 +504,12 @@ def process_author_count(target_authors, process_scope):
             for i in range(1, target_authors + 1)
         ]
 
-        df[cleaned_col] = df["affiliations_original"].apply(
+        print(
+            f"Round {iteration}: replacing affiliations with dictionary "
+            f"({len(df)} rows, {len(raw_to_cleaned)} dictionary entries)..."
+        )
+        tqdm.pandas(desc=f"{target_authors}a round{iteration} replace")
+        df[cleaned_col] = df["affiliations_original"].progress_apply(
             lambda x: replace_from_dictionary(x, raw_to_cleaned)
         )
         df[replaced_col] = (
@@ -402,6 +581,8 @@ def process_author_count(target_authors, process_scope):
         else f"affiliations_dic_names_cleaned_round{loop_iterations_run}"
     )
     df["affiliations"] = df[final_cleaned_col]
+    df = build_author_affi_from_rounds(df, target_authors)
+    df = enrich_authors_from_dic_new(df, dic_new, target_authors)
 
     df_output_view = df[get_visible_author_columns(df, target_authors)]
     df_output_view.to_csv(output_path, sep=";", index=False)
