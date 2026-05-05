@@ -39,6 +39,7 @@ AUTHOR_WORD = {2: "two", 3: "three", 4: "four"}
 
 base_dictionary_names_path = "/Users/yutingren/Library/CloudStorage/Dropbox/Mac/Documents/AI/test_nov/abstract_analysis-main/outputs/dictionary_names.csv"
 base_dic_new_path = "/Users/yutingren/Library/CloudStorage/Dropbox/Mac/Documents/AI/test_nov/abstract_analysis-main/outputs/dic_new.csv"
+base_two_affiliations_manual_applied_path = "/Users/yutingren/Library/CloudStorage/Dropbox/Mac/Documents/AI/test_nov/abstract_analysis-main/outputs/two_affiliations_split_manual_applied.csv"
 BASE_INPUT_PATHS = {
     2: "/Users/yutingren/Library/CloudStorage/Dropbox/Mac/Documents/AI/test_nov/abstract_analysis-main/outputs/db_info_abstract_two_authors_ror.csv",
     3: "/Users/yutingren/Library/CloudStorage/Dropbox/Mac/Documents/AI/test_nov/abstract_analysis-main/outputs/db_info_abstract_three_authors_ror.csv",
@@ -135,6 +136,36 @@ def normalize_dictionary_names(dictionary_frame):
     dictionary_frame = dictionary_frame[dictionary_frame["raw_name"] != ""]
     dictionary_frame = dictionary_frame.drop_duplicates(subset=["raw_name"], keep="first")
     return dictionary_frame
+
+
+def resolve_optional_dataset_path(base_path):
+    dataset_path = apply_dataset_mode(base_path, dataset_mode)
+    if os.path.exists(dataset_path):
+        return dataset_path
+    return base_path
+
+
+def load_two_author_manual_applied_split_names(manual_applied_path):
+    if not os.path.exists(manual_applied_path):
+        return pd.Series(dtype="object")
+
+    manual_df = pd.read_csv(manual_applied_path)
+    manual_df.columns = manual_df.columns.astype(str).str.strip()
+
+    required_cols = {"affiliation_1", "affiliation_2"}
+    if not required_cols.issubset(manual_df.columns):
+        raise ValueError(
+            f"Manual applied two-author file must contain columns {sorted(required_cols)}. "
+            f"Found: {manual_df.columns.tolist()}"
+        )
+
+    split_names = pd.concat(
+        [manual_df["affiliation_1"], manual_df["affiliation_2"]],
+        ignore_index=True,
+    ).dropna()
+    split_names = split_names.astype(str).str.strip()
+    split_names = split_names[split_names != ""]
+    return split_names.drop_duplicates()
 
 
 def resolve_dictionary_names_path(scope_tag):
@@ -449,9 +480,24 @@ def process_author_count(target_authors, process_scope):
     dic_new = load_dic_new(dic_new_path)
     dictionary_names.columns = dictionary_names.columns.str.strip()
     dictionary_names = normalize_dictionary_names(dictionary_names)
+    manual_applied_split_names = pd.Series(dtype="object")
+
+    if target_authors == 2:
+        manual_applied_path = resolve_optional_dataset_path(
+            base_two_affiliations_manual_applied_path
+        )
+        manual_applied_split_names = load_two_author_manual_applied_split_names(
+            manual_applied_path
+        )
 
     print(f"\n=== Processing {target_authors} authors ===")
     print("Input path:", input_path)
+    if target_authors == 2:
+        print("Manual applied two-author split path:", manual_applied_path)
+        print(
+            "Manual applied two-author split names loaded:",
+            int(len(manual_applied_split_names)),
+        )
     if process_scope == "sample_1000":
         print(
             f"Processing mode: first {min(len(df), SAMPLE_SIZE)} {target_authors}-author rows"
@@ -536,6 +582,11 @@ def process_author_count(target_authors, process_scope):
         split_names = pd.concat(split_series_list, ignore_index=True).dropna()
         split_names = split_names.astype(str).str.strip()
         split_names = split_names[split_names != ""]
+        if target_authors == 2 and not manual_applied_split_names.empty:
+            split_names = pd.concat(
+                [split_names, manual_applied_split_names],
+                ignore_index=True,
+            )
         split_names = split_names.drop_duplicates()
 
         existing_raw_names = set(dictionary_names["raw_name"].astype(str).str.strip())
