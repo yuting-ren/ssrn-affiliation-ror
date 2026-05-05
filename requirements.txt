@@ -1,5 +1,6 @@
 pandas
-numpy==1.26.4
+numpy==1.26.4; python_version < "3.14"
+numpy>=2.2; python_version >= "3.14"
 tqdm
 textstat
 matplotlib
@@ -11,3 +12,4 @@ scipy
 openpyxl
 beautifulsoup4
 fasttext
+requests
